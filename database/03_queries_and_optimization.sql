@@ -1,208 +1,204 @@
 -- ============================================================================
--- PROJET BDR - MASTER DATA & IA (INPT)
--- Fichier : 03_queries_and_optimization.sql
--- Etapes 8 & 9 du descriptif : Interrogation avancée, Indexation & EXPLAIN
+-- RELATIONAL DATABASE PROJECT - MASTER IN DATA & AI (INPT)
+-- File : 03_queries_and_optimization.sql
+-- Steps 8 & 9: Advanced Analytical Queries, Indexing & EXPLAIN Optimization
 -- ============================================================================
 
-USE pharmaflow_bdr;
+USE pharmaflow_db;
 
 -- ============================================================================
--- PARTIE A : INTERROGATION DE LA BASE DE DONNEES (Etape 8 du barème)
+-- PART A: ADVANCED ANALYTICAL QUERIES (Step 8)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- REQUETE 1 : Sélection, Filtrage Temporel et Jointures Multiples (INNER JOIN)
--- Objectif  : Lister les lots actifs qui vont périmer dans les 90 prochains
---             jours, avec le nom du médicament, le fournisseur et la zone.
+-- QUERY 1: Temporal Filtering & Multi-Table Inner Joins (INNER JOIN)
+-- Purpose: List all active inventory batches expiring within the next 90 days,
+--          including medication details, supplier name, and storage zone.
 -- ----------------------------------------------------------------------------
 SELECT
-    l.numero_lot_fabricant,
-    m.nom_commercial AS medicament,
-    c.nom_categorie AS categorie,
-    f.raison_sociale AS fournisseur,
-    z.nom_zone AS emplacement,
-    l.quantite_actuelle,
-    l.date_peremption,
-    DATEDIFF(l.date_peremption, CURDATE()) AS jours_restants,
-    ROUND(l.quantite_actuelle * l.prix_achat_unitaire, 2) AS valeur_immobilisee_mad
-FROM lot_stock l
-INNER JOIN medicament m ON l.id_medicament = m.id_medicament
-INNER JOIN categorie_therapeutique c ON m.id_categorie = c.id_categorie
-INNER JOIN fournisseur f ON l.id_fournisseur = f.id_fournisseur
-INNER JOIN zone_stockage z ON l.id_zone = z.id_zone
-WHERE l.statut_lot = 'DISPONIBLE'
-  AND l.quantite_actuelle > 0
-  AND l.date_peremption BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 90 DAY)
-ORDER BY l.date_peremption ASC;
+    b.manufacturer_batch_number,
+    m.brand_name AS medication_name,
+    c.category_name AS therapeutic_category,
+    s.company_name AS supplier_name,
+    z.zone_name AS storage_location,
+    b.current_quantity,
+    b.expiration_date,
+    DATEDIFF(b.expiration_date, CURDATE()) AS days_remaining,
+    ROUND(b.current_quantity * b.unit_purchase_cost, 2) AS capital_at_risk_mad
+FROM stock_batch b
+INNER JOIN medication m ON b.medication_id = m.medication_id
+INNER JOIN therapeutic_category c ON m.category_id = c.category_id
+INNER JOIN supplier s ON b.supplier_id = s.supplier_id
+INNER JOIN storage_zone z ON b.zone_id = z.zone_id
+WHERE b.batch_status = 'AVAILABLE'
+  AND b.current_quantity > 0
+  AND b.expiration_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 90 DAY)
+ORDER BY b.expiration_date ASC;
 
 -- ----------------------------------------------------------------------------
--- REQUETE 2 : Jointure Externe (LEFT JOIN), Agrégation (GROUP BY) et HAVING
--- Objectif  : Identifier les médicaments dont le stock valide total est
---             inférieur au seuil d'alerte (incluant ceux à 0 lot via LEFT JOIN).
+-- QUERY 2: Left Join (LEFT JOIN), Aggregation (GROUP BY) & HAVING Clause
+-- Purpose: Identify medications whose total valid stock has fallen below their
+--          safety reorder threshold (including zero-stock items via LEFT JOIN).
 -- ----------------------------------------------------------------------------
 SELECT
-    m.code_cip,
-    m.nom_commercial,
-    m.seuil_alerte_stock,
-    COALESCE(SUM(CASE WHEN l.statut_lot = 'DISPONIBLE' AND l.date_peremption >= CURDATE()
-                      THEN l.quantite_actuelle ELSE 0 END), 0) AS stock_valide_actuel,
-    m.seuil_alerte_stock - COALESCE(SUM(CASE WHEN l.statut_lot = 'DISPONIBLE' AND l.date_peremption >= CURDATE()
-                                             THEN l.quantite_actuelle ELSE 0 END), 0) AS deficit_unites
-FROM medicament m
-LEFT JOIN lot_stock l ON m.id_medicament = l.id_medicament
-GROUP BY m.id_medicament, m.code_cip, m.nom_commercial, m.seuil_alerte_stock
-HAVING stock_valide_actuel < m.seuil_alerte_stock
-ORDER BY deficit_unites DESC;
+    m.national_drug_code,
+    m.brand_name,
+    m.reorder_threshold,
+    COALESCE(SUM(CASE WHEN b.batch_status = 'AVAILABLE' AND b.expiration_date >= CURDATE()
+                      THEN b.current_quantity ELSE 0 END), 0) AS current_valid_stock,
+    m.reorder_threshold - COALESCE(SUM(CASE WHEN b.batch_status = 'AVAILABLE' AND b.expiration_date >= CURDATE()
+                                            THEN b.current_quantity ELSE 0 END), 0) AS unit_shortfall
+FROM medication m
+LEFT JOIN stock_batch b ON m.medication_id = b.medication_id
+GROUP BY m.medication_id, m.national_drug_code, m.brand_name, m.reorder_threshold
+HAVING current_valid_stock < m.reorder_threshold
+ORDER BY unit_shortfall DESC;
 
 -- ----------------------------------------------------------------------------
--- REQUETE 3 : Sous-requête Corrélée (Correlated Subquery)
--- Objectif  : Pour chaque médicament en alerte de stock, trouver automatiquement
---             le fournisseur agréé offrant le prix d'achat le plus bas.
+-- QUERY 3: Correlated Subquery
+-- Purpose: For each medication, automatically identify the active contracted
+--          supplier offering the lowest unit purchase cost.
 -- ----------------------------------------------------------------------------
 SELECT
-    m.nom_commercial AS medicament,
-    f.raison_sociale AS meilleur_fournisseur,
-    cf.prix_achat_catalogue AS meilleur_prix_mad,
-    cf.delai_livraison_jours,
-    cf.quantite_min_commande
-FROM catalogue_fournisseur cf
-INNER JOIN medicament m ON cf.id_medicament = m.id_medicament
-INNER JOIN fournisseur f ON cf.id_fournisseur = f.id_fournisseur
-WHERE f.statut_actif = TRUE
-  AND cf.prix_achat_catalogue = (
-      -- Sous-requête corrélée sur le médicament courant
-      SELECT MIN(cf2.prix_achat_catalogue)
-      FROM catalogue_fournisseur cf2
-      INNER JOIN fournisseur f2 ON cf2.id_fournisseur = f2.id_fournisseur
-      WHERE cf2.id_medicament = cf.id_medicament
-        AND f2.statut_actif = TRUE
+    m.brand_name AS medication_name,
+    s.company_name AS best_price_supplier,
+    sc.contract_unit_cost AS lowest_unit_cost_mad,
+    sc.lead_time_days,
+    sc.min_order_quantity
+FROM supplier_catalog sc
+INNER JOIN medication m ON sc.medication_id = m.medication_id
+INNER JOIN supplier s ON sc.supplier_id = s.supplier_id
+WHERE s.is_active = TRUE
+  AND sc.contract_unit_cost = (
+      -- Correlated subquery evaluated per medication_id
+      SELECT MIN(sc2.contract_unit_cost)
+      FROM supplier_catalog sc2
+      INNER JOIN supplier s2 ON sc2.supplier_id = s2.supplier_id
+      WHERE sc2.medication_id = sc.medication_id
+        AND s2.is_active = TRUE
   )
-ORDER BY m.nom_commercial;
+ORDER BY m.brand_name;
 
 -- ----------------------------------------------------------------------------
--- REQUETE 4 : Requête Elaborée avec CTE (WITH) + Fonctions de Fenêtrage (Window)
--- Objectif  : Analyse financière ABC (Loi de Pareto) du chiffre d'affaires et
---             de la marge brute générés par chaque médicament dispensé, avec
---             classement DENSE_RANK() et pourcentage cumulé SUM() OVER().
+-- QUERY 4: Common Table Expression (CTE) + Window Functions
+-- Purpose: Perform a Pareto ABC financial analysis of total revenue and gross
+--          profit margin per medication using DENSE_RANK() and SUM() OVER().
 -- ----------------------------------------------------------------------------
-WITH cte_performance_medicaments AS (
+WITH cte_medication_financials AS (
     SELECT
-        m.id_medicament,
-        m.nom_commercial,
-        c.nom_categorie,
-        SUM(ld.quantite_delivree) AS total_unites_vendues,
-        ROUND(SUM(ld.quantite_delivree * ld.prix_unitaire_facture), 2) AS chiffre_affaires_mad,
-        ROUND(SUM(ld.quantite_delivree * (ld.prix_unitaire_facture - l.prix_achat_unitaire)), 2) AS marge_brute_mad
-    FROM ligne_dispensation ld
-    INNER JOIN lot_stock l ON ld.id_lot = l.id_lot
-    INNER JOIN medicament m ON l.id_medicament = m.id_medicament
-    INNER JOIN categorie_therapeutique c ON m.id_categorie = c.id_categorie
-    GROUP BY m.id_medicament, m.nom_commercial, c.nom_categorie
+        m.medication_id,
+        m.brand_name,
+        c.category_name,
+        SUM(di.dispensed_quantity) AS total_units_sold,
+        ROUND(SUM(di.dispensed_quantity * di.billed_unit_price), 2) AS total_revenue_mad,
+        ROUND(SUM(di.dispensed_quantity * (di.billed_unit_price - b.unit_purchase_cost)), 2) AS gross_profit_mad
+    FROM dispensing_item di
+    INNER JOIN stock_batch b ON di.batch_id = b.batch_id
+    INNER JOIN medication m ON b.medication_id = m.medication_id
+    INNER JOIN therapeutic_category c ON m.category_id = c.category_id
+    GROUP BY m.medication_id, m.brand_name, c.category_name
 )
 SELECT
-    DENSE_RANK() OVER (ORDER BY chiffre_affaires_mad DESC) AS rang_ca,
-    nom_commercial,
-    nom_categorie,
-    total_unites_vendues,
-    chiffre_affaires_mad,
-    marge_brute_mad,
+    DENSE_RANK() OVER (ORDER BY total_revenue_mad DESC) AS revenue_rank,
+    brand_name,
+    category_name,
+    total_units_sold,
+    total_revenue_mad,
+    gross_profit_mad,
     ROUND(
-        100.0 * SUM(chiffre_affaires_mad) OVER (ORDER BY chiffre_affaires_mad DESC)
-        / SUM(chiffre_affaires_mad) OVER (),
+        100.0 * SUM(total_revenue_mad) OVER (ORDER BY total_revenue_mad DESC)
+        / SUM(total_revenue_mad) OVER (),
         2
-    ) AS pct_ca_cumule,
+    ) AS cumulative_revenue_pct,
     CASE
-        WHEN SUM(chiffre_affaires_mad) OVER (ORDER BY chiffre_affaires_mad DESC)
-             / SUM(chiffre_affaires_mad) OVER () <= 0.70 THEN 'Classe A (Coeur CA)'
-        WHEN SUM(chiffre_affaires_mad) OVER (ORDER BY chiffre_affaires_mad DESC)
-             / SUM(chiffre_affaires_mad) OVER () <= 0.90 THEN 'Classe B (Intermediaire)'
-        ELSE 'Classe C (Rotation lente)'
-    END AS classification_pareto_abc
-FROM cte_performance_medicaments
-ORDER BY rang_ca;
+        WHEN SUM(total_revenue_mad) OVER (ORDER BY total_revenue_mad DESC)
+             / SUM(total_revenue_mad) OVER () <= 0.70 THEN 'Class A (Core Revenue)'
+        WHEN SUM(total_revenue_mad) OVER (ORDER BY total_revenue_mad DESC)
+             / SUM(total_revenue_mad) OVER () <= 0.90 THEN 'Class B (Intermediate)'
+        ELSE 'Class C (Slow Moving)'
+    END AS pareto_abc_class
+FROM cte_medication_financials
+ORDER BY revenue_rank;
 
 -- ----------------------------------------------------------------------------
--- REQUETE 5 : Analyse de fidélité et dépense des patients par organisme (GROUP BY)
+-- QUERY 5: Insurance Provider Billing Breakdown (GROUP BY)
 -- ----------------------------------------------------------------------------
 SELECT
-    p.organisme_assurance,
-    COUNT(DISTINCT p.id_patient) AS nb_patients,
-    COUNT(DISTINCT o.id_ordonnance) AS nb_ordonnances,
-    SUM(ld.quantite_delivree) AS total_boites_delivrees,
-    ROUND(SUM(ld.quantite_delivree * ld.prix_unitaire_facture), 2) AS montant_total_facture_mad
+    p.insurance_provider,
+    COUNT(DISTINCT p.patient_id) AS unique_patients,
+    COUNT(DISTINCT rx.prescription_id) AS fulfilled_prescriptions,
+    SUM(di.dispensed_quantity) AS total_packs_dispensed,
+    ROUND(SUM(di.dispensed_quantity * di.billed_unit_price), 2) AS total_billed_amount_mad
 FROM patient p
-INNER JOIN ordonnance o ON p.id_patient = o.id_patient
-INNER JOIN ligne_dispensation ld ON o.id_ordonnance = ld.id_ordonnance
-WHERE o.statut_ordonnance = 'SERVIE'
-GROUP BY p.organisme_assurance
-ORDER BY montant_total_facture_mad DESC;
+INNER JOIN prescription rx ON p.patient_id = rx.patient_id
+INNER JOIN dispensing_item di ON rx.prescription_id = di.prescription_id
+WHERE rx.prescription_status = 'DISPENSED'
+GROUP BY p.insurance_provider
+ORDER BY total_billed_amount_mad DESC;
 
 
 -- ============================================================================
--- PARTIE B : INDEXATION ET OPTIMISATION AVEC EXPLAIN (Etape 9 du barème)
+-- PART B: INDEXING & QUERY OPTIMIZATION WITH EXPLAIN (Step 9)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 1. AVANT CREATION DES INDEX : Tester le plan d'exécution avec EXPLAIN
+-- 1. BEFORE INDEX CREATION: Inspect baseline execution plans with EXPLAIN
 -- ----------------------------------------------------------------------------
--- Requête cible A : Recherche FEFO des lots disponibles d'un médicament triés par date de péremption
+-- Target Query A: FEFO lookup of available non-expired batches sorted by expiration_date
 EXPLAIN
-SELECT id_lot, numero_lot_fabricant, quantite_actuelle, date_peremption
-FROM lot_stock
-WHERE id_medicament = 1
-  AND statut_lot = 'DISPONIBLE'
-  AND date_peremption >= CURDATE()
-ORDER BY date_peremption ASC;
+SELECT batch_id, manufacturer_batch_number, current_quantity, expiration_date
+FROM stock_batch
+WHERE medication_id = 1
+  AND batch_status = 'AVAILABLE'
+  AND expiration_date >= CURDATE()
+ORDER BY expiration_date ASC;
 
--- Requête cible B : Historique des mouvements d'audit filtré par type et trié par date
+-- Target Query B: Audit log lookup filtered by movement_type and sorted by movement_timestamp
 EXPLAIN
-SELECT id_mouvement, id_lot, type_mouvement, delta_quantite, date_mouvement
-FROM journal_mouvements_stock
-WHERE type_mouvement = 'DISPENSATION'
-ORDER BY date_mouvement DESC;
+SELECT movement_id, batch_id, movement_type, quantity_delta, movement_timestamp
+FROM stock_movement_log
+WHERE movement_type = 'DISPENSING'
+ORDER BY movement_timestamp DESC;
 
 -- ----------------------------------------------------------------------------
--- 2. CREATION DES INDEX PERTINENTS (Justification métier & technique)
+-- 2. CREATE COMPOSITE B-TREE INDEXES
 -- ----------------------------------------------------------------------------
 
--- INDEX 1 : Index composite couvrant la recherche FEFO dans lot_stock
--- Justification : La procédure stockée sp_dispenser_medicament_fefo et le radar
--- de péremption filtrent systématiquement sur (id_medicament, statut_lot, date_peremption).
--- Cet index B-Tree élimine le tri coûteux ("Using filesort") et permet un Index Range Scan direct.
-CREATE INDEX idx_lot_fefo_lookup
-ON lot_stock (id_medicament, statut_lot, date_peremption, quantite_actuelle);
+-- INDEX 1: Covering composite index for FEFO batch allocation
+-- Justification: Eliminates costly "Using filesort" and full medication partition scans
+-- during sp_dispense_medication_fefo execution by serving the filter, sort, and projection directly from the B-Tree.
+CREATE INDEX idx_batch_fefo_lookup
+ON stock_batch (medication_id, batch_status, expiration_date, current_quantity);
 
--- INDEX 2 : Index composite sur le journal d'audit des mouvements de stock
--- Justification : La table journal_mouvements_stock croît à chaque opération (table la plus
--- volumineuse en production). Filtrer par type_mouvement et trier par date_mouvement sans
--- index provoque un Full Table Scan (type = ALL + Using filesort).
-CREATE INDEX idx_journal_type_date
-ON journal_mouvements_stock (type_mouvement, date_mouvement DESC);
+-- INDEX 2: Composite index on the high-growth stock movement audit ledger
+-- Justification: Replaces a Full Table Scan (type = ALL + Using filesort) with an ordered
+-- index lookup (type = ref) when filtering by movement_type and sorting chronologically.
+CREATE INDEX idx_movement_type_date
+ON stock_movement_log (movement_type, movement_timestamp DESC);
 
--- INDEX 3 : Index sur date_prescription et statut_ordonnance
--- Justification : Accélère le filtrage temporel du tableau de bord des ordonnances.
-CREATE INDEX idx_ordonnance_date_statut
-ON ordonnance (date_prescription, statut_ordonnance);
+-- INDEX 3: Composite index on prescription date and status for reporting dashboards
+CREATE INDEX idx_prescription_date_status
+ON prescription (prescription_date, prescription_status);
 
 -- ----------------------------------------------------------------------------
--- 3. APRES CREATION DES INDEX : Comparaison du plan d'exécution avec EXPLAIN
+-- 3. AFTER INDEX CREATION: Compare optimized execution plans with EXPLAIN
 -- ----------------------------------------------------------------------------
--- Résultat attendu sur Requête A :
--- AVANT : key = fk_lot_medicament, Extra = "Using where; Using filesort"
--- APRES : key = idx_lot_fefo_lookup, Extra = "Using where; Using index" (Covering Index, 0 filesort !)
+-- Expected Result on Query A:
+-- BEFORE: key = fk_batch_medication, Extra = "Using where; Using filesort"
+-- AFTER : key = idx_batch_fefo_lookup, Extra = "Using where; Using index" (Covering Index, 0 filesort)
 EXPLAIN
-SELECT id_lot, numero_lot_fabricant, quantite_actuelle, date_peremption
-FROM lot_stock
-WHERE id_medicament = 1
-  AND statut_lot = 'DISPONIBLE'
-  AND date_peremption >= CURDATE()
-ORDER BY date_peremption ASC;
+SELECT batch_id, manufacturer_batch_number, current_quantity, expiration_date
+FROM stock_batch
+WHERE medication_id = 1
+  AND batch_status = 'AVAILABLE'
+  AND expiration_date >= CURDATE()
+ORDER BY expiration_date ASC;
 
--- Résultat attendu sur Requête B :
--- AVANT : type = ALL (Full Table Scan), key = NULL, Extra = "Using where; Using filesort"
--- APRES : type = ref, key = idx_journal_type_date, Extra = "Using where" (Scan indexé ordonné !)
+-- Expected Result on Query B:
+-- BEFORE: type = ALL (Full Table Scan), key = NULL, Extra = "Using where; Using filesort"
+-- AFTER : type = ref, key = idx_movement_type_date, Extra = "Using where" (Ordered index scan)
 EXPLAIN
-SELECT id_mouvement, id_lot, type_mouvement, delta_quantite, date_mouvement
-FROM journal_mouvements_stock
-WHERE type_mouvement = 'DISPENSATION'
-ORDER BY date_mouvement DESC;
+SELECT movement_id, batch_id, movement_type, quantity_delta, movement_timestamp
+FROM stock_movement_log
+WHERE movement_type = 'DISPENSING'
+ORDER BY movement_timestamp DESC;
