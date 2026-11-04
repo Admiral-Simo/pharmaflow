@@ -26,3 +26,12 @@ project/
 │   └── main.py                         # Classic apothecary ledger Streamlit interface (Zero emojis)
 ├── requirements.txt                    # Python dependencies
 └── README.md                           # Documentation & execution guide
+
+```bash
+pip install -r requirements.txt
+```
+
+
+```bash
+streamlit run app/main.py
+```
