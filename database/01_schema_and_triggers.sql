@@ -1,10 +1,3 @@
--- ============================================================================
--- RELATIONAL DATABASE PROJECT - MASTER IN DATA & AI (INPT)
--- System  : PharmaFlow - Hospital Pharmacy, FEFO Batch & Prescription Management
--- DBMS    : MySQL 8.0+
--- File    : 01_schema_and_triggers.sql
--- ============================================================================
-
 DROP DATABASE IF EXISTS pharmaflow_db;
 CREATE DATABASE pharmaflow_db
     CHARACTER SET utf8mb4
@@ -12,11 +5,7 @@ CREATE DATABASE pharmaflow_db
 
 USE pharmaflow_db;
 
--- ============================================================================
--- 1. TABLE DEFINITIONS (3NF Relational Schema)
--- ============================================================================
 
--- 1.1 Therapeutic Categories (ATC Classification)
 CREATE TABLE therapeutic_category (
     category_id INT AUTO_INCREMENT,
     atc_code VARCHAR(10) NOT NULL,
@@ -27,7 +16,6 @@ CREATE TABLE therapeutic_category (
     CONSTRAINT uq_category_name UNIQUE (category_name)
 ) ENGINE=InnoDB;
 
--- 1.2 Pharmaceutical Suppliers
 CREATE TABLE supplier (
     supplier_id INT AUTO_INCREMENT,
     company_name VARCHAR(120) NOT NULL,
@@ -45,7 +33,6 @@ CREATE TABLE supplier (
     CONSTRAINT chk_supplier_reliability CHECK (reliability_score BETWEEN 1.00 AND 5.00)
 ) ENGINE=InnoDB;
 
--- 1.3 Storage Zones (Cold Rooms, Standard Shelving, Quarantine Vaults)
 CREATE TABLE storage_zone (
     zone_id INT AUTO_INCREMENT,
     zone_code VARCHAR(20) NOT NULL,
@@ -60,7 +47,6 @@ CREATE TABLE storage_zone (
     CONSTRAINT chk_zone_capacity CHECK (max_capacity > 0)
 ) ENGINE=InnoDB;
 
--- 1.4 Medications Master Catalog
 CREATE TABLE medication (
     medication_id INT AUTO_INCREMENT,
     national_drug_code VARCHAR(20) NOT NULL,
@@ -82,7 +68,6 @@ CREATE TABLE medication (
     CONSTRAINT chk_medication_reorder_threshold CHECK (reorder_threshold >= 0)
 ) ENGINE=InnoDB;
 
--- 1.5 M:N Junction Table: Supplier Catalog (Composite Primary Key)
 CREATE TABLE supplier_catalog (
     supplier_id INT NOT NULL,
     medication_id INT NOT NULL,
@@ -102,7 +87,6 @@ CREATE TABLE supplier_catalog (
     CONSTRAINT chk_catalog_min_order_qty CHECK (min_order_quantity >= 1)
 ) ENGINE=InnoDB;
 
--- 1.6 Physical Inventory Batches (Core FEFO Entity)
 CREATE TABLE stock_batch (
     batch_id INT AUTO_INCREMENT,
     manufacturer_batch_number VARCHAR(40) NOT NULL,
@@ -133,7 +117,6 @@ CREATE TABLE stock_batch (
     CONSTRAINT chk_batch_purchase_cost CHECK (unit_purchase_cost > 0)
 ) ENGINE=InnoDB;
 
--- 1.7 Patients
 CREATE TABLE patient (
     patient_id INT AUTO_INCREMENT,
     national_id VARCHAR(15) NOT NULL,
@@ -147,7 +130,6 @@ CREATE TABLE patient (
     CONSTRAINT uq_patient_national_id UNIQUE (national_id)
 ) ENGINE=InnoDB;
 
--- 1.8 Prescribing Physicians
 CREATE TABLE physician (
     physician_id INT AUTO_INCREMENT,
     license_number VARCHAR(20) NOT NULL,
@@ -159,7 +141,6 @@ CREATE TABLE physician (
     CONSTRAINT uq_physician_license UNIQUE (license_number)
 ) ENGINE=InnoDB;
 
--- 1.9 Medical Prescriptions
 CREATE TABLE prescription (
     prescription_id INT AUTO_INCREMENT,
     prescription_reference VARCHAR(30) NOT NULL,
@@ -179,7 +160,6 @@ CREATE TABLE prescription (
         ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
--- 1.10 M:N Junction Table: Dispensing Line Items (Prescription <-> Stock_Batch)
 CREATE TABLE dispensing_item (
     prescription_id INT NOT NULL,
     batch_id INT NOT NULL,
@@ -197,7 +177,6 @@ CREATE TABLE dispensing_item (
     CONSTRAINT chk_dispensing_price CHECK (billed_unit_price > 0)
 ) ENGINE=InnoDB;
 
--- 1.11 Immutable Stock Movement Audit Ledger
 CREATE TABLE stock_movement_log (
     movement_id INT AUTO_INCREMENT,
     batch_id INT NOT NULL,
@@ -214,13 +193,9 @@ CREATE TABLE stock_movement_log (
         ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
--- ============================================================================
--- 2. BUSINESS LOGIC TRIGGERS (Requirement #7)
--- ============================================================================
 
 DELIMITER $$
 
--- TRIGGER 1: Enforce Cold-Chain Compliance and Synchronize Batch Status on INSERT
 CREATE TRIGGER trg_before_insert_batch_validation
 BEFORE INSERT ON stock_batch
 FOR EACH ROW
@@ -248,7 +223,6 @@ BEGIN
     END IF;
 END$$
 
--- TRIGGER 2: Automatically Log Initial Batch Receipt in the Audit Ledger
 CREATE TRIGGER trg_after_insert_batch_audit
 AFTER INSERT ON stock_batch
 FOR EACH ROW
@@ -266,7 +240,6 @@ BEGIN
     );
 END$$
 
--- TRIGGER 3: Guard Dispensing Against Expired/Quarantined Batches and Deduct Stock Automatically
 CREATE TRIGGER trg_before_insert_dispensing_item
 BEFORE INSERT ON dispensing_item
 FOR EACH ROW
@@ -307,7 +280,6 @@ BEGIN
     WHERE batch_id = NEW.batch_id;
 END$$
 
--- TRIGGER 4: Automatically Transition Batch Status ('DEPLETED' at 0) Before UPDATE
 CREATE TRIGGER trg_before_update_batch_status
 BEFORE UPDATE ON stock_batch
 FOR EACH ROW
@@ -319,7 +291,6 @@ BEGIN
     END IF;
 END$$
 
--- TRIGGER 5: Record Every Stock Quantity or Quarantine Change in the Immutable Audit Ledger
 CREATE TRIGGER trg_after_update_batch_audit
 AFTER UPDATE ON stock_batch
 FOR EACH ROW
@@ -362,13 +333,7 @@ BEGIN
     END IF;
 END$$
 
--- ============================================================================
--- 3. STORED PROCEDURES & ACID TRANSACTIONS
--- ============================================================================
 
--- PROCEDURE 1: Automated FEFO (First-Expired, First-Out) Prescription Dispensing
--- Allocates requested medication quantity across the earliest-expiring valid batches
--- inside an atomic transaction with row-level locking (SELECT ... FOR UPDATE).
 CREATE PROCEDURE sp_dispense_medication_fefo(
     IN p_prescription_id INT,
     IN p_medication_id INT,
@@ -461,11 +426,7 @@ END$$
 
 DELIMITER ;
 
--- ============================================================================
--- 4. ANALYTICAL VIEWS
--- ============================================================================
 
--- VIEW 1: Consolidated Medication Stock Status & Low-Stock Reorder Alerts
 CREATE OR REPLACE VIEW vw_medication_stock_status AS
 SELECT
     m.medication_id,
@@ -495,7 +456,6 @@ GROUP BY
     m.dosage_form, m.strength, c.category_name,
     m.unit_selling_price, m.reorder_threshold, m.requires_cold_chain;
 
--- VIEW 2: FEFO Batch Expiration Risk Radar
 CREATE OR REPLACE VIEW vw_batch_expiration_radar AS
 SELECT
     b.batch_id,

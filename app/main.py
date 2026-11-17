@@ -11,17 +11,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from database import DatabaseManager
 
-# Page Configuration (No emojis)
 st.set_page_config(
     page_title="PHARMAFLOW DB - Apothecary Ledger & FEFO Batch Management",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Classic Color Palette for Plotly Charts (Apothecary Green, Ochre, Burgundy, Slate)
 RETRO_PALETTE = ["#1B4332", "#8C5A2B", "#7B2D26", "#2C4251", "#5C6B5E", "#A47E3B"]
 
-# Classic / Retro CSS Stylesheet (Parchment ledger paper, Serif & Monospace typography, sharp borders)
 st.markdown(
     """
     <style>

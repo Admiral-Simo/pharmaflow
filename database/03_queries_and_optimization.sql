@@ -1,20 +1,7 @@
--- ============================================================================
--- RELATIONAL DATABASE PROJECT - MASTER IN DATA & AI (INPT)
--- File : 03_queries_and_optimization.sql
--- Steps 8 & 9: Advanced Analytical Queries, Indexing & EXPLAIN Optimization
--- ============================================================================
 
 USE pharmaflow_db;
 
--- ============================================================================
--- PART A: ADVANCED ANALYTICAL QUERIES (Step 8)
--- ============================================================================
 
--- ----------------------------------------------------------------------------
--- QUERY 1: Temporal Filtering & Multi-Table Inner Joins (INNER JOIN)
--- Purpose: List all active inventory batches expiring within the next 90 days,
---          including medication details, supplier name, and storage zone.
--- ----------------------------------------------------------------------------
 SELECT
     b.manufacturer_batch_number,
     m.brand_name AS medication_name,
@@ -35,11 +22,6 @@ WHERE b.batch_status = 'AVAILABLE'
   AND b.expiration_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 90 DAY)
 ORDER BY b.expiration_date ASC;
 
--- ----------------------------------------------------------------------------
--- QUERY 2: Left Join (LEFT JOIN), Aggregation (GROUP BY) & HAVING Clause
--- Purpose: Identify medications whose total valid stock has fallen below their
---          safety reorder threshold (including zero-stock items via LEFT JOIN).
--- ----------------------------------------------------------------------------
 SELECT
     m.national_drug_code,
     m.brand_name,
@@ -54,11 +36,6 @@ GROUP BY m.medication_id, m.national_drug_code, m.brand_name, m.reorder_threshol
 HAVING current_valid_stock < m.reorder_threshold
 ORDER BY unit_shortfall DESC;
 
--- ----------------------------------------------------------------------------
--- QUERY 3: Correlated Subquery
--- Purpose: For each medication, automatically identify the active contracted
---          supplier offering the lowest unit purchase cost.
--- ----------------------------------------------------------------------------
 SELECT
     m.brand_name AS medication_name,
     s.company_name AS best_price_supplier,
@@ -79,11 +56,6 @@ WHERE s.is_active = TRUE
   )
 ORDER BY m.brand_name;
 
--- ----------------------------------------------------------------------------
--- QUERY 4: Common Table Expression (CTE) + Window Functions
--- Purpose: Perform a Pareto ABC financial analysis of total revenue and gross
---          profit margin per medication using DENSE_RANK() and SUM() OVER().
--- ----------------------------------------------------------------------------
 WITH cte_medication_financials AS (
     SELECT
         m.medication_id,
@@ -120,9 +92,6 @@ SELECT
 FROM cte_medication_financials
 ORDER BY revenue_rank;
 
--- ----------------------------------------------------------------------------
--- QUERY 5: Insurance Provider Billing Breakdown (GROUP BY)
--- ----------------------------------------------------------------------------
 SELECT
     p.insurance_provider,
     COUNT(DISTINCT p.patient_id) AS unique_patients,
@@ -137,14 +106,7 @@ GROUP BY p.insurance_provider
 ORDER BY total_billed_amount_mad DESC;
 
 
--- ============================================================================
--- PART B: INDEXING & QUERY OPTIMIZATION WITH EXPLAIN (Step 9)
--- ============================================================================
 
--- ----------------------------------------------------------------------------
--- 1. BEFORE INDEX CREATION: Inspect baseline execution plans with EXPLAIN
--- ----------------------------------------------------------------------------
--- Target Query A: FEFO lookup of available non-expired batches sorted by expiration_date
 EXPLAIN
 SELECT batch_id, manufacturer_batch_number, current_quantity, expiration_date
 FROM stock_batch
@@ -153,39 +115,22 @@ WHERE medication_id = 1
   AND expiration_date >= CURDATE()
 ORDER BY expiration_date ASC;
 
--- Target Query B: Audit log lookup filtered by movement_type and sorted by movement_timestamp
 EXPLAIN
 SELECT movement_id, batch_id, movement_type, quantity_delta, movement_timestamp
 FROM stock_movement_log
 WHERE movement_type = 'DISPENSING'
 ORDER BY movement_timestamp DESC;
 
--- ----------------------------------------------------------------------------
--- 2. CREATE COMPOSITE B-TREE INDEXES
--- ----------------------------------------------------------------------------
 
--- INDEX 1: Covering composite index for FEFO batch allocation
--- Justification: Eliminates costly "Using filesort" and full medication partition scans
--- during sp_dispense_medication_fefo execution by serving the filter, sort, and projection directly from the B-Tree.
 CREATE INDEX idx_batch_fefo_lookup
 ON stock_batch (medication_id, batch_status, expiration_date, current_quantity);
 
--- INDEX 2: Composite index on the high-growth stock movement audit ledger
--- Justification: Replaces a Full Table Scan (type = ALL + Using filesort) with an ordered
--- index lookup (type = ref) when filtering by movement_type and sorting chronologically.
 CREATE INDEX idx_movement_type_date
 ON stock_movement_log (movement_type, movement_timestamp DESC);
 
--- INDEX 3: Composite index on prescription date and status for reporting dashboards
 CREATE INDEX idx_prescription_date_status
 ON prescription (prescription_date, prescription_status);
 
--- ----------------------------------------------------------------------------
--- 3. AFTER INDEX CREATION: Compare optimized execution plans with EXPLAIN
--- ----------------------------------------------------------------------------
--- Expected Result on Query A:
--- BEFORE: key = fk_batch_medication, Extra = "Using where; Using filesort"
--- AFTER : key = idx_batch_fefo_lookup, Extra = "Using where; Using index" (Covering Index, 0 filesort)
 EXPLAIN
 SELECT batch_id, manufacturer_batch_number, current_quantity, expiration_date
 FROM stock_batch
@@ -194,9 +139,6 @@ WHERE medication_id = 1
   AND expiration_date >= CURDATE()
 ORDER BY expiration_date ASC;
 
--- Expected Result on Query B:
--- BEFORE: type = ALL (Full Table Scan), key = NULL, Extra = "Using where; Using filesort"
--- AFTER : type = ref, key = idx_movement_type_date, Extra = "Using where" (Ordered index scan)
 EXPLAIN
 SELECT movement_id, batch_id, movement_type, quantity_delta, movement_timestamp
 FROM stock_movement_log
